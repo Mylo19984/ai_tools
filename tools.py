@@ -1,11 +1,21 @@
 import os
 import xml.etree.ElementTree as ET
 from typing import Any, Optional
+from urllib.parse import quote
 
 import requests
 from tavily import TavilyClient
 
+try:
+    import wikipedia
+except ImportError:  # pragma: no cover - optional dependency
+    wikipedia = None
+
 session = requests.Session()
+session.headers.update({
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9",
+})
 
 
 def tavily_search_tool(
@@ -249,6 +259,94 @@ arxiv_tool_def = {
 }
 
 
+def wikipedia_search_tool(query: str, sentences: int = 5) -> list[dict]:
+    """
+    Searches Wikipedia for a summary of the given query.
+    """
+    clean_query = query.strip()
+    if not clean_query:
+        return [{"error": "Query must not be empty."}]
+
+    try:
+        if wikipedia is not None:
+            page_title = wikipedia.search(clean_query)[0]
+            page = wikipedia.page(page_title)
+            summary = wikipedia.summary(page_title, sentences=sentences)
+            return [{"title": page.title, "summary": summary, "url": page.url}]
+
+        search_url = (
+            "https://en.wikipedia.org/w/api.php"
+            "?action=query&list=search&srsearch="
+            + quote(clean_query)
+            + "&format=json&utf8=1"
+        )
+        search_response = session.get(search_url, timeout=30)
+        search_response.raise_for_status()
+        search_data = search_response.json()
+        hits = search_data.get("query", {}).get("search", [])
+        if not hits:
+            return [{"error": "No Wikipedia results found."}]
+
+        page_title = hits[0]["title"]
+        summary_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{quote(page_title)}"
+        summary_response = session.get(summary_url, timeout=30)
+        summary_response.raise_for_status()
+        summary_data = summary_response.json()
+
+        return [{
+            "title": page_title,
+            "summary": summary_data.get("extract") or "",
+            "url": summary_data.get("content_urls", {}).get("desktop", {}).get("page")
+            or f"https://en.wikipedia.org/wiki/{quote(page_title.replace(' ', '_'))}",
+        }]
+    except Exception as exc:
+        return [{"error": str(exc)}]
+
+
+claude_wikipedia_tool = {
+    "name": "wikipedia_search_tool",
+    "description": "Searches Wikipedia and returns a concise summary and article URL for the best matching page.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "The topic or keywords to search for on Wikipedia.",
+            },
+            "sentences": {
+                "type": "integer",
+                "description": "Number of sentences to include in the summary.",
+                "default": 5,
+            },
+        },
+        "required": ["query"],
+    },
+}
+
+# OpenAI-compatible alias for environments that expect the chat-completions tool schema.
+wikipedia_tool_def = {
+    "type": "function",
+    "function": {
+        "name": "wikipedia_search_tool",
+        "description": "Searches Wikipedia and returns a concise summary and article URL for the best matching page.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The topic or keywords to search for on Wikipedia.",
+                },
+                "sentences": {
+                    "type": "integer",
+                    "description": "Number of sentences to include in the summary.",
+                    "default": 5,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
+
 
 __all__ = [
     "tavily_search_tool",
@@ -257,4 +355,7 @@ __all__ = [
     "arxiv_search_tool",
     "claude_arxiv_tool",
     "arxiv_tool_def",
+    "wikipedia_search_tool",
+    "claude_wikipedia_tool",
+    "wikipedia_tool_def",
 ]
